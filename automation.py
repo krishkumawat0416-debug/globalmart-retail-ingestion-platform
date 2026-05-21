@@ -149,19 +149,25 @@ try:
         # file extension
         extension = os.path.splitext(file_name)[1].lower()
 
-        # agar extension nahi hai
-        if extension == "":
+        # sirf json file allow
+        if extension != ".json":
 
-            extension = ".others"
+            print(f"Skipped (Not JSON File): {file_name}")
 
-        # dot remove
-        folder_name = extension.replace(".", "")
+            # skipped status
+            update_status(
+                file_id,
+                file_name,
+                "SKIPPED_NOT_JSON"
+            )
+
+            continue
 
         # current date
         current_date = datetime.now().strftime("%Y-%m-%d")
 
         # final s3 path
-        s3_key = f"{folder_name}/{current_date}/{file_name}"
+        s3_key = f"json/{current_date}/{file_name}"
 
         # duplicate file check
         if file_exists_in_s3(BUCKET_NAME, s3_key):
