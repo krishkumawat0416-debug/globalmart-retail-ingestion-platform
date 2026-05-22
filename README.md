@@ -460,6 +460,139 @@ The `s3_int` storage integration links Snowflake to `s3://global-data-mart-bucke
 
 ---
 
+---
+
+## Phase 3 — Snowflake Advanced Features
+
+Phase 3 focuses on Snowflake-native features: table types, Time Travel, Streams, and Tasks — all implemented on top of the data already loaded in Phase 1 and Phase 2.
+
+---
+
+### Transient and Temporary Tables
+
+Two additional table types were demonstrated to understand Snowflake's storage tiers:
+
+**Transient Table** — `daily_sales_buffer` was created as a transient table from `pos_transactions`. Transient tables behave like permanent tables but skip Fail-Safe storage, reducing storage costs. Useful for intermediate buffer data that does not need disaster recovery.
+
+**Temporary Table** — `temp_iot_dedup` was created from `json_data` as a temporary table. It exists only for the session duration and is automatically dropped when the session ends. Used for short-lived deduplication or staging logic.
+
+---
+
+### Time Travel
+
+#### Using OFFSET
+
+Time Travel was tested on `pos_transactions` using a controlled update:
+
+```sql
+UPDATE pos_transactions SET discount_pct = 99 WHERE discount_pct < 10;
+```
+
+After confirming the change, the 5-minute-old snapshot was accessed using `AT(OFFSET => -300)` and the table was fully restored:
+
+```sql
+CREATE OR REPLACE TABLE pos_transactions AS
+SELECT * FROM pos_transactions AT(OFFSET => -300);
+```
+
+![Snowflake Time Travel OFFSET — UPDATE and restore query](images/snowflake-timetravel-offset.png)
+
+#### Using TIMESTAMP and BEFORE(STATEMENT)
+
+`erp_orders` was updated and then recovered using an exact timestamp and a statement ID:
+
+```sql
+UPDATE erp_orders SET quantity_ordered = 1546 WHERE order_id = 'ORD_000001';
+
+-- Recover using exact timestamp
+SELECT quantity_ordered FROM erp_orders
+AT(TIMESTAMP => '2026-05-21 22:47:49.667 -0700') WHERE order_id = 'ORD_000001';
+
+-- Restore using BEFORE(STATEMENT)
+UPDATE erp_orders SET quantity_ordered = (
+    SELECT quantity_ordered FROM erp_orders
+    BEFORE(STATEMENT => '01c48833-3202-b787-0016-ff76000deb06')
+    WHERE order_id = 'ORD_000001'
+) WHERE order_id = 'ORD_000001';
+```
+
+`BEFORE(STATEMENT)` targets the exact state before a specific query executed — more precise than OFFSET and preferred in production recovery.
+
+---
+
+### UNDROP TABLE
+
+`erp_inventory` was intentionally dropped and recovered:
+
+```sql
+DROP TABLE erp_inventory;
+SELECT * FROM erp_inventory;   -- throws error
+UNDROP TABLE erp_inventory;
+SELECT COUNT(*) FROM erp_inventory;  -- fully restored
+```
+
+Snowflake retains dropped tables within the Time Travel retention window. `UNDROP` restores the table along with all its data instantly.
+
+---
+
+### Fail-Safe Analysis
+
+`INFORMATION_SCHEMA.TABLE_STORAGE_METRICS` was queried to compare permanent vs transient tables. Permanent tables include a 7-day Fail-Safe period beyond Time Travel. Transient tables skip Fail-Safe entirely — cheaper for non-critical data.
+
+---
+
+### Streams (CDC)
+
+Four streams were created to track changes across all tables:
+
+```sql
+CREATE OR REPLACE STREAM pos_stream       ON TABLE pos_transactions  APPEND_ONLY = TRUE;
+CREATE OR REPLACE STREAM orders_stream    ON TABLE erp_orders;
+CREATE OR REPLACE STREAM inventory_stream ON TABLE erp_inventory     APPEND_ONLY = TRUE;
+CREATE OR REPLACE STREAM json_stream      ON TABLE json_data          APPEND_ONLY = TRUE;
+```
+
+`SHOW STREAMS` confirms all 4 streams active in `GLOBAL_DATA_MART.SALES`:
+
+![Snowflake SHOW STREAMS — 4 streams active across all tables](images/snowflake-show-streams.png)
+
+---
+
+### Tasks (Automation)
+
+Four tasks were created to process stream data every minute and resumed with `ALTER TASK ... RESUME`:
+
+```sql
+CREATE OR REPLACE TASK pos_task       WAREHOUSE = compute_wh SCHEDULE = '1 MINUTE' AS SELECT * FROM pos_stream;
+CREATE OR REPLACE TASK orders_task    WAREHOUSE = compute_wh SCHEDULE = '1 MINUTE' AS SELECT * FROM orders_stream;
+CREATE OR REPLACE TASK inventory_task WAREHOUSE = compute_wh SCHEDULE = '1 MINUTE' AS SELECT * FROM inventory_stream;
+CREATE OR REPLACE TASK json_task      WAREHOUSE = compute_wh SCHEDULE = '1 MINUTE' AS SELECT * FROM json_stream;
+```
+
+`SHOW TASKS` confirms all 4 tasks in `GLOBAL_DATA_MART.SALES` with their schedule and IDs:
+
+![Snowflake SHOW TASKS — 4 tasks scheduled every minute](images/snowflake-show-tasks.png)
+
+---
+
+### Phase 3 — Challenges and Fixes
+
+#### 1. Storage Integration — External ID Kept Changing
+
+**Problem:** Every time the `s3_int` storage integration was dropped and recreated during testing, Snowflake generated a new `STORAGE_AWS_EXTERNAL_ID`. This broke the existing IAM trust policy in AWS — the External ID no longer matched, causing `AccessDenied` errors on every stage and Snowpipe operation.
+
+**Fix:** Stopped dropping and recreating the integration. Used `CREATE OR REPLACE STORAGE INTEGRATION` only once and kept it persistent. When the External ID changed, `DESC STORAGE INTEGRATION s3_int` was run to fetch the latest values, and the IAM trust policy was manually updated in the AWS Console to match.
+
+---
+
+#### 2. APPEND_ONLY vs Standard Stream
+
+**Problem:** For `erp_orders`, an `APPEND_ONLY` stream was initially created. But since orders get updated (status changes, quantity corrections), the stream was missing UPDATE and DELETE events — CDC was incomplete.
+
+**Fix:** Recreated `orders_stream` as a standard stream (without `APPEND_ONLY = TRUE`) so it captures inserts, updates, and deletes via the `METADATA$ACTION` and `METADATA$ISUPDATE` columns.
+
+---
+
 ### Challenges and Fixes
 
 #### 1. FTP Connection — `pysftp` vs `ftplib`
@@ -546,5 +679,5 @@ drive-to-s3-sync/
 ---
 
 <div align="center">
-<sub>Built by Krish Kumawat &nbsp;·&nbsp; Phase 1: Google Drive → S3 &nbsp;·&nbsp; Phase 2: FTP → S3 → Snowflake &nbsp;·&nbsp; Runs 24/7 on AWS EC2 (ap-south-1)</sub>
+<sub>Built by Krish Kumawat &nbsp;·&nbsp; Phase 1: Google Drive → S3 &nbsp;·&nbsp; Phase 2: FTP → S3 → Snowflake &nbsp;·&nbsp; Phase 3: Time Travel · Streams · Tasks &nbsp;·&nbsp; Runs 24/7 on AWS EC2 (ap-south-1)</sub>
 </div>
