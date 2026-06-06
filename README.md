@@ -780,6 +780,17 @@ Daily revenue trend across full 2023 (Jan–Dec), total unique customers, averag
 
 ---
 
+#### GlobalMart Quarterly Performance Overview
+
+Q3 vs Q4 comparison across 5 KPIs — Avg Cart Size (35.53M, -0.21%), 
+Units Sold (181.82K, +0.5%), Revenue (294.76M, +0.17%), 
+Transactions (30.22K, +0.55%), and Customers (30.21K, +0.56%). 
+Q4 shows overall growth vs Q3 across most metrics.
+
+![Power BI — GlobalMart Quarterly Performance Overview](images/powerbi-dashboard-3.png)
+
+---
+
 <div align="center">
 <sub>Built by Krish Kumawat &nbsp;·&nbsp; Phase 1: Google Drive → S3 &nbsp;·&nbsp; Phase 2: FTP → S3 → Snowflake &nbsp;·&nbsp; Phase 3: Time Travel · Streams · Tasks &nbsp;·&nbsp; Phase 4: Silver Layer · Medallion Architecture &nbsp;·&nbsp; Phase 5: Gold Layer · Power BI &nbsp;·&nbsp; Runs 24/7 on AWS EC2 (ap-south-1)</sub>
 </div>
