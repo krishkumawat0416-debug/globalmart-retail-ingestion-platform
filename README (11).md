@@ -35,6 +35,8 @@ Automated multi-source pipeline: monitors Google Drive + FTP server, syncs files
   - [Snowflake Integration](#snowflake-integration)
   - [Screenshots — Phase 2](#screenshots--phase-2)
   - [Challenges and Fixes](#challenges-and-fixes)
+- [Phase 4 — Silver Layer](#phase-4--silver-layer-medallion-architecture)
+- [Phase 5 — Gold Layer & Power BI](#phase-5--gold-layer--power-bi-dashboard)
 - [Project Structure](#project-structure)
 - [Security Best Practices](#security-best-practices)
 
@@ -678,6 +680,106 @@ drive-to-s3-sync/
 
 ---
 
+## Phase 4 — Silver Layer (Medallion Architecture)
+
+Phase 4 introduced a proper **Bronze → Silver** pipeline using Snowflake's Medallion Architecture. Raw data from S3 now flows through staging tables first, then Tasks clean and transform it into Silver tables automatically.
+
+Three separate pipelines were built — one for each source:
+
+**CSV (POS transactions):** `csv_staging_pipe` loads raw CSV into `staging.stg_csv_transaction`, a Stream detects new rows, and `task_csv_to_silver` cleans and inserts into `silver_csv_transaction` — fixing negative values, splitting timestamp into date and time, and computing the actual order line total.
+
+**JSON (IoT events):** `json_staging_pipe` loads raw JSON into `staging.stg_json_iot`, and `task_json_to_silver` uses `LATERAL FLATTEN` to explode nested `readings[]` and `alerts[]` arrays into clean rows inside `silver_iot_events`.
+
+**Parquet (ERP orders):** `orders_bronze_pipe` loads into `staging.iot_raw_bronze`, and `task_orders_to_silver` runs a `MERGE` into `silver_erp_orders` — updating existing orders and inserting new ones based on `order_id`.
+
+All three Tasks run every minute and only fire `WHEN SYSTEM$STREAM_HAS_DATA` — no unnecessary compute.
+
+---
+
+#### Snowflake — SHOW PIPES
+
+4 active Snowpipes in `GLOBAL_DATA_MART.SALES` — `CSV_PIPE`, `INVENTORY_PIPE`, `JSON_PIPE`, and `ORDERS_PIPE` — each connected to its respective S3 stage.
+
+![Snowflake SHOW PIPES — 4 active pipes](images/snowflake-show-pipes.png)
+
+---
+
+#### Snowflake — SHOW TASKS (Silver Layer)
+
+3 Tasks running in `GLOBAL_DATA_MART.SALES` — `TASK_CSV_TO_SILVER`, `TASK_JSON_TO_SILVER`, and `TASK_ORDERS_TO_SILVER`. Each fires every minute only when its Stream has new data.
+
+![Snowflake SHOW TASKS — 3 silver tasks active](images/snowflake-show-tasks-phase4.png)
+
+---
+
+#### Silver CSV — `silver_csv_transaction` (240,000 rows)
+
+Cleaned POS transaction data with split timestamp, corrected negative values, and computed `total_orderline`. Source: 10 stores across Istanbul, Izmir, Ankara, and Antalya.
+
+![silver_csv_transaction — 240,000 rows loaded](images/snowflake-silver-csv.png)
+
+---
+
+#### Silver IoT — `silver_iot_events` (120,000 rows)
+
+IoT events with nested `readings[]` arrays flattened into individual rows using `LATERAL FLATTEN`. Each event expands into multiple sensor readings — `cold_storage`, `pos_terminal`, `entrance_gate` etc. — with `alert_type` and `alert_severity` extracted from `alerts[]`.
+
+![silver_iot_events — LATERAL FLATTEN result with 120,000 rows](images/snowflake-silver-iot.png)
+
+---
+
+## Phase 5 — Gold Layer & Power BI Dashboard
+
+Phase 5 builds the business-facing Gold layer on top of Silver tables and connects it to Power BI.
+
+**`fact_decisions`** — Daily aggregation of POS transactions per store and category: total revenue, units sold, unique customers, average cart size. This is the base table for all Gold views.
+
+**`fact_gross_margin`** — Joins `silver_csv_transaction` (POS revenue) with `silver_erp_orders` (ERP procurement cost) on `store_id + category` to compute gross profit and gross profit margin per store per category.
+
+**`fact_iot_store_daily`** — Pivots IoT sensor readings into daily per-store columns: average temperature, occupancy, footfall, humidity, power, and total alert count.
+
+**`fact_sales_verses_iot`** — Joins `fact_decisions` with `fact_iot_store_daily` on `store_id + date` — connects sales performance directly to IoT sensor conditions on the same day.
+
+**Views** — `fact_kpi_summary`, `store_revenue` (rolling 30-day), `matelized_view_category_by_region`, `fact_daily_revenue` — all pre-aggregated for dashboard consumption.
+
+---
+
+#### Gold — `fact_gross_margin` (80 rows)
+
+POS revenue joined with ERP procurement cost on `store_id + category`. Shows `total_revenue`, `total_cost`, `total_gross_profit`, and `gross_profit_margin` — the core business metric that was invisible before this pipeline.
+
+![fact_gross_margin — revenue vs cost join result](images/snowflake-fact-gross-margin.png)
+
+---
+
+#### Gold — `fact_sales_verses_iot` (28,759 rows)
+
+Sales data joined with IoT sensor readings on `store_id + date`. Each row shows a store's daily transactions, revenue, and basket size alongside the day's average temperature, footfall, occupancy, and alert count.
+
+![fact_sales_verses_iot — 3-way join result with 28,759 rows](images/snowflake-fact-sales-vs-iot.png)
+
+---
+
+## Power BI Dashboard
+
+Two dashboards built in Power BI connected directly to Snowflake Gold layer tables.
+
+#### Global Retail Store Performance Overview
+
+KPIs: 5,000 unique customers, 75.18% average gross profit margin, 120K total transactions, 1.17bn total revenue. Store-level breakdown by city, units sold by category, and revenue split by payment method (Cash / Credit Card / Debit Card — each ~33%).
+
+![Power BI — Global Retail Store Performance Overview](images/powerbi-dashboard-1.png)
+
+---
+
+#### Sales & Customer Intelligence Dashboard
+
+Daily revenue trend across full 2023 (Jan–Dec), total unique customers, average discount, and total units sold. Revenue line chart shows consistent daily throughput of 3–4M across all stores.
+
+![Power BI — Sales and Customer Intelligence Dashboard](images/powerbi-dashboard-2.png)
+
+---
+
 <div align="center">
-<sub>Built by Krish Kumawat &nbsp;·&nbsp; Phase 1: Google Drive → S3 &nbsp;·&nbsp; Phase 2: FTP → S3 → Snowflake &nbsp;·&nbsp; Phase 3: Time Travel · Streams · Tasks &nbsp;·&nbsp; Runs 24/7 on AWS EC2 (ap-south-1)</sub>
+<sub>Built by Krish Kumawat &nbsp;·&nbsp; Phase 1: Google Drive → S3 &nbsp;·&nbsp; Phase 2: FTP → S3 → Snowflake &nbsp;·&nbsp; Phase 3: Time Travel · Streams · Tasks &nbsp;·&nbsp; Phase 4: Silver Layer · Medallion Architecture &nbsp;·&nbsp; Phase 5: Gold Layer · Power BI &nbsp;·&nbsp; Runs 24/7 on AWS EC2 (ap-south-1)</sub>
 </div>
